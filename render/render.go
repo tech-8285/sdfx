@@ -85,17 +85,26 @@ func To3MF(
 	fmt.Printf("rendering %s (%s)\n", path, r.Info(s))
 	// write the triangles to a 3MF file
 	var wg sync.WaitGroup
-	output, err := write3MF(&wg, path)
+	output, reports, err := write3MF(&wg, path)
 	if err != nil {
-		fmt.Printf("%s", err)
+		fmt.Printf("%s\n", err)
 		return
 	}
 	// run the renderer
 	r.Render(s, sdf.NewTriangle3Buffer(output))
-	// stop the STL writer reading on the channel
+	// stop the 3MF writer reading on the channel
 	close(output)
 	// wait for the file write to complete
 	wg.Wait()
+	// surface topology diagnostics and any hard write failure
+	report := <-reports
+	if report.Err != nil {
+		fmt.Printf("%s\n", report.Err)
+		return
+	}
+	if !report.OK() {
+		fmt.Printf("%s\n", report)
+	}
 }
 
 //-----------------------------------------------------------------------------
