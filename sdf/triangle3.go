@@ -9,6 +9,7 @@
 package sdf
 
 import (
+	"math"
 	"sync"
 
 	v3 "github.com/deadsy/sdfx/vec/v3"
@@ -140,6 +141,169 @@ func (t *Triangle3) intersectRay(rp, rv v3.Vec) []v3.Vec {
 
 	// This means that there is a line intersection but not a ray intersection.
 	return nil
+}
+
+// rayCrossCount counts how many times the ray from p (in direction rv)
+// crosses the triangle. Unlike intersectRay, a hit at rt == 0 (the ray
+// starting on the triangle plane) counts, because inside/outside parity must
+// be well defined for query points on the mesh surface or on octree
+// boundaries. Edge-on (parallel) rays miss, so axis-aligned rays only
+// degenerate against triangles coplanar with that axis, which are skipped.
+func (t *Triangle3) rayCrossCount(rp, rv v3.Vec) int {
+	e1 := t[1].Sub(t[0])
+	e2 := t[2].Sub(t[0])
+	h := rv.Cross(e2)
+	a := e1.Dot(h)
+	if EqualFloat64(a, 0, epsilon) {
+		// ray parallel to the triangle plane
+		return 0
+	}
+	f := 1.0 / a
+	s := rp.Sub(t[0])
+	u := f * s.Dot(h)
+	if u < 0 || u > 1 {
+		return 0
+	}
+	q := s.Cross(e1)
+	v := f * rv.Dot(q)
+	if v < 0 || u+v > 1 {
+		return 0
+	}
+	rt := f * e2.Dot(q)
+	// rt >= 0: the crossing lies on the ray, including at its origin
+	if rt >= 0 {
+		return 1
+	}
+	return 0
+}
+
+//-----------------------------------------------------------------------------
+// Triangle/triangle intersection (Möller's separating axis method).
+//
+// See: T. Möller, "A Fast Triangle-Triangle Intersection Test", 1997.
+// The two triangles intersect if the segment where their planes overlap
+// pierces both triangles. Coplanar triangles are handled with a 2D projection
+// overlap test.
+
+// trianglePlaneInterval projects the triangle vertices onto the line of
+// intersection of the two planes (axis) and returns the covered interval.
+func trianglePlaneInterval(t *Triangle3, axis v3.Vec) (lo, hi float64) {
+	lo = math.MaxFloat64
+	hi = -math.MaxFloat64
+	for k := 0; k < 3; k++ {
+		p := t[k].Dot(axis)
+		if p < lo {
+			lo = p
+		}
+		if p > hi {
+			hi = p
+		}
+	}
+	return lo, hi
+}
+
+// triIntersectEps is the absolute tolerance for the triangle/triangle
+// separating-axis tests. Meshes in this package work in millimetre scale
+// coordinates, where 1e-12 is well below numerical noise.
+const triIntersectEps = 1e-12
+
+// intersectTriangle returns true if the two triangles intersect. Triangles
+// sharing a vertex or edge should be filtered out by the caller.
+func (t *Triangle3) intersectTriangle(o *Triangle3) bool {
+	n1 := t[1].Sub(t[0]).Cross(t[2].Sub(t[0]))
+	n2 := o[1].Sub(o[0]).Cross(o[2].Sub(o[0]))
+
+	d1 := o[0].Sub(t[0]).Dot(n1)
+	d2 := o[1].Sub(t[0]).Dot(n1)
+	d3 := o[2].Sub(t[0]).Dot(n1)
+
+	if math.Abs(d1) < triIntersectEps && math.Abs(d2) < triIntersectEps && math.Abs(d3) < triIntersectEps {
+		// coplanar: fall back to a projected 2d overlap test
+		return t.coplanarOverlap(o, n1)
+	}
+
+	if (d1 > triIntersectEps && d2 > triIntersectEps && d3 > triIntersectEps) ||
+		(d1 < -triIntersectEps && d2 < -triIntersectEps && d3 < -triIntersectEps) {
+		// triangle o lies entirely on one side of t's plane
+		return false
+	}
+
+	// direction of the line of intersection of the two planes
+	axis := n1.Cross(n2)
+	if axis.Length2() < triIntersectEps {
+		// parallel planes that are not coplanar never intersect
+		return false
+	}
+
+	lo1, hi1 := trianglePlaneInterval(o, axis)
+	lo2, hi2 := trianglePlaneInterval(t, axis)
+
+	return lo1 <= hi2+triIntersectEps && lo2 <= hi1+triIntersectEps
+}
+
+// coplanarOverlap tests two triangles known to lie in (nearly) the same plane
+// for overlap, by projecting onto the dominant axis of the plane normal.
+func (t *Triangle3) coplanarOverlap(o *Triangle3, n v3.Vec) bool {
+	// scale the tolerance to the triangle coordinates so the absolute
+	// 1e-12 constant does not misclassify points at normal model scales
+	eps := triIntersectEps * (1 + t.BoundingBox().Size().MaxComponent())
+	// project onto the two axes most perpendicular to the plane normal:
+	// the normal's dominant component names the axis to discard
+	ax := math.Abs(n.X)
+	ay := math.Abs(n.Y)
+	az := math.Abs(n.Z)
+	proj := func(p v3.Vec) (float64, float64) {
+		switch {
+		case ax >= ay && ax >= az:
+			// normal points mainly along X: project onto YZ
+			return p.Y, p.Z
+		case ay >= ax && ay >= az:
+			// normal points mainly along Y: project onto XZ
+			return p.X, p.Z
+		default:
+			// normal points mainly along Z: project onto XY
+			return p.X, p.Y
+		}
+	}
+	var pa [3][2]float64
+	var pb [3][2]float64
+	for k := 0; k < 3; k++ {
+		pa[k][0], pa[k][1] = proj(t[k])
+		pb[k][0], pb[k][1] = proj(o[k])
+	}
+	// edge/edge intersection test in the projection plane
+	segIntersect := func(a0, a1, b0, b1 [2]float64) bool {
+		d := (a1[0]-a0[0])*(b1[1]-b0[1]) - (a1[1]-a0[1])*(b1[0]-b0[0])
+		if math.Abs(d) < eps {
+			return false
+		}
+		q := ((b0[0]-a0[0])*(b1[1]-b0[1]) - (b0[1]-a0[1])*(b1[0]-b0[0])) / d
+		r := ((b0[0]-a0[0])*(a1[1]-a0[1]) - (b0[1]-a0[1])*(a1[0]-a0[0])) / d
+		return q >= -eps && q <= 1+eps && r >= -eps && r <= 1+eps
+	}
+	for i := 0; i < 3; i++ {
+		for j := 0; j < 3; j++ {
+			if segIntersect(pa[i], pa[(i+1)%3], pb[j], pb[(j+1)%3]) {
+				return true
+			}
+		}
+	}
+	// no edge crossings: one triangle may be entirely inside the other
+	pointInTri := func(p [2]float64, tri [3][2]float64) bool {
+		sign := func(a, b, p [2]float64) float64 {
+			return (a[0]-p[0])*(b[1]-p[1]) - (b[0]-p[0])*(a[1]-p[1])
+		}
+		d1 := sign(tri[0], tri[1], p)
+		d2 := sign(tri[1], tri[2], p)
+		d3 := sign(tri[2], tri[0], p)
+		hasNeg := d1 < -eps || d2 < -eps || d3 < -eps
+		hasPos := d1 > eps || d2 > eps || d3 > eps
+		return !(hasNeg && hasPos)
+	}
+	if pointInTri(pa[0], pb) || pointInTri(pb[0], pa) {
+		return true
+	}
+	return false
 }
 
 //-----------------------------------------------------------------------------

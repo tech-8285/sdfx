@@ -68,7 +68,8 @@ func (t *triMeshSdf) BoundingBox() sdf.Box3 {
 //
 // It is recommended to cache (and/or smooth) its values by using sdf.VoxelSdf3.
 //
-// WARNING: It will only work on non-intersecting closed-surface(s) meshes.
+// WARNING: It will only work on non-intersecting closed-surface(s) meshes. Open or self-intersecting input is not
+// validated here and yields an undefined field; use ImportTriMeshManifold to reject such input explicitly.
 // NOTE: Fix using blender for intersecting surfaces: Edit mode > P > By loose parts > Add boolean modifier to join them
 func ImportTriMesh(mesh []*sdf.Triangle3, numNeighbors, minChildren, maxChildren int) sdf.SDF3 {
 	if len(mesh) == 0 {
@@ -86,6 +87,16 @@ func ImportTriMesh(mesh []*sdf.Triangle3, numNeighbors, minChildren, maxChildren
 		numNeighbors: numNeighbors,
 		bb:           bb,
 	}
+}
+
+// ImportTriMeshManifold converts a closed triangle mesh into a signed
+// distance field with guaranteed inside/outside semantics. The mesh must be a
+// closed, consistently oriented, non-self-intersecting 2-manifold; otherwise
+// a *sdf.MeshTopologyError is returned instead of an undefined distance
+// field. The returned SDF3 supports positive and negative Offset3D and
+// Shell3D coherently because its sign follows the mesh topology.
+func ImportTriMeshManifold(mesh []*sdf.Triangle3) (sdf.SDF3, error) {
+	return sdf.Mesh3D(mesh)
 }
 
 //-----------------------------------------------------------------------------
@@ -172,6 +183,17 @@ func ImportSTL(path string, numNeighbors, minChildren, maxChildren int) (sdf.SDF
 		return nil, err
 	}
 	return ImportTriMesh(mesh, numNeighbors, minChildren, maxChildren), nil
+}
+
+// ImportSTLManifold loads an STL and converts it to a signed distance field,
+// rejecting open, non-manifold or self-intersecting meshes with a
+// *sdf.MeshTopologyError. See ImportTriMeshManifold.
+func ImportSTLManifold(path string) (sdf.SDF3, error) {
+	mesh, err := render.LoadSTL(path)
+	if err != nil {
+		return nil, err
+	}
+	return ImportTriMeshManifold(mesh)
 }
 
 //-----------------------------------------------------------------------------
