@@ -61,7 +61,7 @@ The package layers as follows:
 - **Primitives** — `Box3D`, `Sphere3D`, `Cylinder3D`, `Circle2D`, `Polygon2D`, bezier/spline profiles, screw threads, text glyphs, gyroid, imported triangle meshes (`mesh3.go`), etc.
 - **CSG combinators** — `Union2D/3D`, `Difference2D/3D`, `Intersect2D/3D`, `Cut2D/3D`. Union/Intersect/Difference structs expose a settable min/max blend function so callers can fillet or chamfer joins.
 - **Transforms** — `Transform2D/3D` (arbitrary M33/M44), `ScaleUniform`, `RotateUnion`, `RotateCopy`, `Array`, `Offset`, `Shell`.
-- **2D → 3D lifts** — `Extrude3D` (with twist/scale variants), `Revolve3D`/`RevolveTheta3D`, `Loft3D`, `Screw3D`.
+- **2D → 3D lifts** — `Extrude3D` (with twist/scale variants), `Revolve3D`/`RevolveTheta3D`, `Loft3D`, `Screw3D`, `Sweep3D` (2D cross-section swept along a polyline or smooth 3D path, open or closed, with optional uniform twist).
 
 A model is therefore just a tree of these structs; rendering walks space and calls `Evaluate` on the root, which recurses down the tree.
 
